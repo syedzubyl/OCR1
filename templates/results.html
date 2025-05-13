@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aadhaar OCR - Results</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 50px auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        .nav {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .nav a {
+            background-color: #4CAF50;
+            color: white;
+            padding: 8px 15px;
+            text-decoration: none;
+            border-radius: 4px;
+        }
+        .nav a:hover {
+            background-color: #45a049;
+        }
+        .result-section {
+            margin-bottom: 30px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 20px;
+        }
+        .result-item {
+            margin-bottom: 15px;
+        }
+        .result-label {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .result-value {
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+            border: 1px solid #eee;
+        }
+        .error {
+            color: #721c24;
+            background-color: #f8d7da;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .raw-text {
+            white-space: pre-wrap;
+            font-family: monospace;
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+        }
+        .toggle-raw-text {
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .toggle-raw-text:hover {
+            background-color: #0b7dda;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <a href="{{ url_for('index') }}">Upload Another</a>
+        </div>
+        
+        <h1>Aadhaar Card OCR Results</h1>
+        
+        {% if results.error %}
+            <div class="error">
+                <p>Error processing the document: {{ results.error }}</p>
+            </div>
+        {% else %}
+            <div class="result-section">
+                <h2>Aadhaar Card Details</h2>
+                
+                {% if results.aadhaar_number %}
+                    <div class="result-item">
+                        <div class="result-label">Aadhaar Number:</div>
+                        <div class="result-value">{{ results.aadhaar_number }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.name_tamil %}
+                    <div class="result-item">
+                        <div class="result-label">Name (Tamil):</div>
+                        <div class="result-value">{{ results.name_tamil }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.name %}
+                    <div class="result-item">
+                        <div class="result-label">Name:</div>
+                        <div class="result-value">{{ results.name }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.guardian_name %}
+                    <div class="result-item">
+                        <div class="result-label">Guardian Name:</div>
+                        <div class="result-value">{{ results.guardian_name }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.dob %}
+                    <div class="result-item">
+                        <div class="result-label">Date of Birth:</div>
+                        <div class="result-value">{{ results.dob }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.gender %}
+                    <div class="result-item">
+                        <div class="result-label">Gender:</div>
+                        <div class="result-value">{{ results.gender }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.address %}
+                    <div class="result-item">
+                        <div class="result-label">Address:</div>
+                        <div class="result-value">{{ results.address }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.district %}
+                    <div class="result-item">
+                        <div class="result-label">District:</div>
+                        <div class="result-value">{{ results.district }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.state %}
+                    <div class="result-item">
+                        <div class="result-label">State:</div>
+                        <div class="result-value">{{ results.state }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.pincode %}
+                    <div class="result-item">
+                        <div class="result-label">Pincode:</div>
+                        <div class="result-value">{{ results.pincode }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.phone %}
+                    <div class="result-item">
+                        <div class="result-label">Phone:</div>
+                        <div class="result-value">{{ results.phone }}</div>
+                    </div>
+                {% endif %}
+                
+                {% if results.vid %}
+                    <div class="result-item">
+                        <div class="result-label">VID:</div>
+                        <div class="result-value">{{ results.vid }}</div>
+                    </div>
+                {% endif %}
+                
+                <button class="toggle-raw-text" onclick="toggleRawText('raw')">Show/Hide Raw Text</button>
+                <div id="raw-text-raw" class="raw-text" style="display: none;">
+                    {{ results.raw_text }}
+                </div>
+            </div>
+        {% endif %}
+    </div>
+    
+    <script>
+        function toggleRawText(id) {
+            const rawTextElement = document.getElementById(`raw-text-${id}`);
+            if (rawTextElement.style.display === 'none') {
+                rawTextElement.style.display = 'block';
+            } else {
+                rawTextElement.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
