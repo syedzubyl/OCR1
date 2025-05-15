@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import io
 import fitz  # PyMuPDF
 from pydantic import BaseModel
+import difflib  # For fuzzy string matching
 
 # Load environment variables
 load_dotenv()
@@ -51,7 +52,7 @@ class AadhaarData(BaseModel):
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Extract text from image using Tesseract OCR
+# Extract text from image using Tesseract OCR with enhanced preprocessing
 def extract_text_from_image(image: Image.Image) -> str:
     # Convert PIL Image to OpenCV format
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -59,19 +60,57 @@ def extract_text_from_image(image: Image.Image) -> str:
     # Process with OpenCV for better OCR results
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-    # Apply threshold to get better results
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Apply multiple preprocessing techniques and combine results for better accuracy
 
-    # OCR the image
-    custom_config = r'--oem 3 --psm 6'
+    # Method 1: Basic thresholding
+    _, thresh1 = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Method 2: Adaptive thresholding
+    thresh2 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+
+    # Method 3: Bilateral filtering for noise reduction while preserving edges
+    bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
+    _, thresh3 = cv2.threshold(bilateral, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Method 4: Denoising
+    denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+    _, thresh4 = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Method 5: Sharpening
+    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+    sharpened = cv2.filter2D(gray, -1, kernel)
+    _, thresh5 = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Try different PSM modes for better text detection
+    psm_modes = [6, 4, 3]  # 6=Block of text, 4=Single column, 3=Auto
+
+    all_text = ""
+
+    # Try with Tamil language support first
     try:
-        # Try with Tamil language support
-        return pytesseract.image_to_string(thresh, config=custom_config, lang='eng+tam')
+        for psm in psm_modes:
+            custom_config = f'--oem 3 --psm {psm}'
+
+            # Process with all preprocessing methods
+            for thresh in [thresh1, thresh2, thresh3, thresh4, thresh5]:
+                text = pytesseract.image_to_string(thresh, config=custom_config, lang='eng+tam')
+                all_text += " " + text
+
+        return all_text
     except:
         # Fallback to English only
-        return pytesseract.image_to_string(thresh, config=custom_config, lang='eng')
+        all_text = ""
+        for psm in psm_modes:
+            custom_config = f'--oem 3 --psm {psm}'
 
-# Extract text from PDF using PyMuPDF
+            # Process with all preprocessing methods
+            for thresh in [thresh1, thresh2, thresh3, thresh4, thresh5]:
+                text = pytesseract.image_to_string(thresh, config=custom_config, lang='eng')
+                all_text += " " + text
+
+        return all_text
+
+# Extract text from PDF using PyMuPDF with enhanced processing
 def extract_text_from_pdf(pdf_bytes: bytes, password: str = None) -> str:
     text = ""
     try:
@@ -81,130 +120,266 @@ def extract_text_from_pdf(pdf_bytes: bytes, password: str = None) -> str:
             if not success:
                 return "ERROR: Invalid password for PDF"
 
-        # Extract text from each page
-        for page in doc:
-            text += page.get_text("text")
+        # Extract text from each page using multiple methods
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
 
-        # If text extraction yields little content, try image-based extraction
-        if len(text.strip()) < 100:
-            images = []
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                pix = page.get_pixmap()
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                images.append(img)
+            # Method 1: Direct text extraction
+            page_text = page.get_text("text")
+            text += page_text + "\n"
 
-            # Process each image with OCR
-            for img in images:
-                text += extract_text_from_image(img)
+            # Method 2: Extract text with different parameters
+            page_text_blocks = page.get_text("blocks")
+            for block in page_text_blocks:
+                if isinstance(block, tuple) and len(block) > 4:
+                    text += block[4] + "\n"
+
+            # Method 3: Always perform image-based extraction for better accuracy
+            # This helps with scanned documents or when text is embedded in images
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # Increase resolution for better OCR
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            # Apply OCR to the image
+            img_text = extract_text_from_image(img)
+            text += img_text + "\n"
+
+            # Method 4: Extract text from specific regions if needed
+            # This can be useful for targeting specific areas where names typically appear
+            # For Aadhaar cards, names are usually in the top portion
+            top_region = page.rect_for_bbox((0, 0, page.rect.width, page.rect.height * 0.3))
+            pix_top = page.get_pixmap(clip=top_region, matrix=fitz.Matrix(2, 2))
+            img_top = Image.frombytes("RGB", [pix_top.width, pix_top.height], pix_top.samples)
+            top_text = extract_text_from_image(img_top)
+            text += top_text + "\n"
 
         return text
     except Exception as e:
         return f"ERROR: {str(e)}"
 
-# Extract name logic
-def extract_name_from_text(lines):
+# Define common Indian names for better name recognition
+COMMON_INDIAN_FIRST_NAMES = [
+    "Aarav", "Aditya", "Akshay", "Amit", "Ananya", "Anil", "Arjun", "Aryan",
+    "Deepak", "Divya", "Gaurav", "Ishaan", "Karan", "Kavya", "Krishna", "Kunal",
+    "Manish", "Meera", "Mohan", "Neha", "Nikhil", "Nisha", "Pooja", "Priya",
+    "Rahul", "Raj", "Rajesh", "Ravi", "Rohit", "Sanjay", "Sarika", "Shivani",
+    "Sneha", "Sonia", "Sunil", "Suresh", "Tanvi", "Varun", "Vijay", "Vikram"
+]
+
+# Enhanced name extraction with scoring system
+def extract_name_from_text(lines, full_text=""):
+    # Combine lines and full text for comprehensive analysis
+    if not full_text:
+        full_text = " ".join(lines)
+
+    # List of unwanted phrases that should not be identified as names
     unwanted_phrases = [
-        "Digitally signed by DS Unique",
-        "Identification Authority of India",
-        "Government of India",
-        "Signature Not Verified",
-        "Tamil Nadu",
-        "Kerala",
-        "Karnataka",
-        "Andhra Pradesh",
-        "Telangana",
-        "Maharashtra",
-        "Gujarat",
-        "Rajasthan",
-        "Madhya Pradesh",
-        "Uttar Pradesh",
-        "Bihar",
-        "West Bengal",
-        "Odisha",
-        "Punjab",
-        "Haryana",
-        "Jharkhand",
-        "Chhattisgarh",
-        "Uttarakhand",
-        "Himachal Pradesh",
-        "Jammu and Kashmir",
-        "Assam",
-        "Manipur",
-        "Meghalaya",
-        "Nagaland",
-        "Tripura",
-        "Arunachal Pradesh",
-        "Mizoram",
-        "Sikkim",
-        "Goa",
+        "Digitally signed by", "DS Unique", "Identification Authority", "Authority of India",
+        "Government of India", "Signature Not Verified", "Aadhaar", "UIDAI", "Unique Identification",
+        "Tamil Nadu", "Kerala", "Karnataka", "Andhra Pradesh", "Telangana", "Maharashtra",
+        "Gujarat", "Rajasthan", "Madhya Pradesh", "Uttar Pradesh", "Bihar", "West Bengal",
+        "Odisha", "Punjab", "Haryana", "Jharkhand", "Chhattisgarh", "Uttarakhand",
+        "Himachal Pradesh", "Jammu and Kashmir", "Assam", "Manipur", "Meghalaya",
+        "Nagaland", "Tripura", "Arunachal Pradesh", "Mizoram", "Sikkim", "Goa",
+        "Address", "Gender", "DOB", "Date of Birth", "Male", "Female", "District", "State",
+        "Pincode", "Phone", "VID", "Year of Birth", "Enrollment", "Enrolment", "Registered",
+        "Resident", "Citizen", "India", "Document", "Certificate", "Card", "Number"
     ]
 
-    # First, try to find name after "Name:" label
-    name_pattern = r'Name[:\s]+([A-Za-z\s\'-]+)'
+    # Common words that should not be part of a name
+    common_words = [
+        "the", "and", "for", "this", "that", "with", "from", "your", "have", "has",
+        "not", "yes", "no", "address", "gender", "dob", "birth", "male", "female",
+        "district", "state", "pincode", "phone", "number", "card", "aadhaar"
+    ]
+
+    # Initialize candidates with scores
+    name_candidates = []
+
+    # Method 1: Look for explicit name labels
+    name_patterns = [
+        r'Name[:\s]+([A-Za-z\s\'-]+)',
+        r'(?:^|\n)([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})(?=\s*\n)',  # Capitalized name at start of line
+        r'(?i)name of person[:\s]+([A-Za-z\s\'-]+)',
+        r'(?i)holder[\'s]? name[:\s]+([A-Za-z\s\'-]+)',
+        r'(?i)applicant[\'s]? name[:\s]+([A-Za-z\s\'-]+)'
+    ]
+
+    for pattern in name_patterns:
+        matches = re.finditer(pattern, full_text, re.IGNORECASE | re.MULTILINE)
+        for match in matches:
+            name = match.group(1).strip()
+            # Clean up the name
+            name = re.sub(r'\s+', ' ', name)
+            name = name.strip()
+
+            # Skip if it contains unwanted phrases
+            if any(phrase.lower() in name.lower() for phrase in unwanted_phrases):
+                continue
+
+            # Skip if it's too short or too long
+            if len(name) < 3 or len(name) > 40:
+                continue
+
+            # Skip if it contains common words that shouldn't be in names
+            if any(f" {word} " in f" {name.lower()} " for word in common_words):
+                continue
+
+            # Score: Higher for explicit name labels (10 points)
+            score = 10
+
+            # Bonus if name contains common Indian first names
+            if any(first_name.lower() in name.lower() for first_name in COMMON_INDIAN_FIRST_NAMES):
+                score += 3
+
+            # Bonus for capitalized words (proper names)
+            if re.match(r'^[A-Z][a-z]+(\s[A-Z][a-z]+)+$', name):
+                score += 2
+
+            name_candidates.append((name, score, "explicit_label"))
+
+    # Method 2: Look for name before guardian indicators
+    guardian_patterns = [
+        r'([A-Za-z\s\'-]+)\s+(?:S/O|C/O|W/O|D/O|Son of|Daughter of|Wife of|Care of)[.:]?\s+([A-Za-z\s\'-]+)',
+        r'([A-Za-z\s\'-]+)\s+(?:S/O|C/O|W/O|D/O)[.:]?\s+([A-Za-z\s\'-]+)'
+    ]
+
+    for pattern in guardian_patterns:
+        matches = re.finditer(pattern, full_text, re.IGNORECASE)
+        for match in matches:
+            name = match.group(1).strip()
+            guardian = match.group(2).strip()
+
+            # Clean up the name
+            name = re.sub(r'\s+', ' ', name)
+            name = name.strip()
+
+            # Skip if it contains unwanted phrases
+            if any(phrase.lower() in name.lower() for phrase in unwanted_phrases):
+                continue
+
+            # Skip if it's too short or too long
+            if len(name) < 3 or len(name) > 40:
+                continue
+
+            # Skip if it contains common words that shouldn't be in names
+            if any(f" {word} " in f" {name.lower()} " for word in common_words):
+                continue
+
+            # Score: Good for guardian-based names (8 points)
+            score = 8
+
+            # Bonus if name contains common Indian first names
+            if any(first_name.lower() in name.lower() for first_name in COMMON_INDIAN_FIRST_NAMES):
+                score += 3
+
+            # Bonus for capitalized words (proper names)
+            if re.match(r'^[A-Z][a-z]+(\s[A-Z][a-z]+)+$', name):
+                score += 2
+
+            name_candidates.append((name, score, "before_guardian"))
+
+            # Also add guardian name as a candidate with lower score
+            if guardian and len(guardian) > 3:
+                guardian = re.sub(r'\s+', ' ', guardian)
+                score_guardian = 5  # Lower score for guardian names
+
+                # Bonus if guardian name contains common Indian first names
+                if any(first_name.lower() in guardian.lower() for first_name in COMMON_INDIAN_FIRST_NAMES):
+                    score_guardian += 2
+
+                name_candidates.append((guardian, score_guardian, "guardian"))
+
+    # Method 3: Look for standalone names (capitalized words at beginning of lines)
     for line in lines:
-        name_match = re.search(name_pattern, line, re.IGNORECASE)
-        if name_match:
-            name = name_match.group(1).strip()
-            # Check if the extracted name is not a state or other unwanted phrase
-            if name and all(phrase.lower() not in name.lower() for phrase in unwanted_phrases):
-                return name
+        line = line.strip()
 
-    # If not found with label, look for guardian name and infer the person's name
-    guardian_pattern = r'(?:S/O|C/O|W/O|D/O)[.:]?\s*([A-Za-z\s\'-]+)'
-    for line in lines:
-        guardian_match = re.search(guardian_pattern, line, re.IGNORECASE)
-        if guardian_match:
-            # If we found a guardian name, look for a name before it in the same line
-            full_line = line.strip()
-            parts = re.split(r'\s*(?:S/O|C/O|W/O|D/O)\s*', full_line, flags=re.IGNORECASE)
-            if len(parts) > 1 and parts[0].strip():
-                name_part = parts[0].strip()
-                # Check if the extracted name is not a state or other unwanted phrase
-                if all(phrase.lower() not in name_part.lower() for phrase in unwanted_phrases):
-                    return name_part
+        # Skip short lines or lines with unwanted content
+        if len(line) < 3 or any(phrase.lower() in line.lower() for phrase in unwanted_phrases):
+            continue
 
-    # If still not found, try to find a name pattern in the text
-    for line in lines:
-        clean_line = line.strip()
-        # Check for a line that looks like a name (all alphabetic, more than one word)
-        if (
-            re.match(r'^[A-Za-z\s\'-]+$', clean_line)
-            and len(clean_line.split()) >= 2
-            and len(clean_line.split()) <= 5  # Most names have 2-5 words
-            and all(phrase.lower() not in clean_line.lower() for phrase in unwanted_phrases)
-            and not re.search(r'(?:address|gender|dob|date of birth|male|female|district|state|pincode)',
-                             clean_line, re.IGNORECASE)
-        ):
-            # Make sure it's not just a state name or other common label
-            name_part = re.split(r'\s*(?:S/O|C/O|W/O|D/O)\s*', clean_line, flags=re.IGNORECASE)[0]
-            name_part = re.sub(r'\s+[CWSD]\s*$', '', name_part).strip()
-            name_part = re.sub(r'\s+', ' ', name_part)
+        # Look for capitalized words that might be names
+        if re.match(r'^[A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3}$', line) and not re.search(r'\d', line):
+            name = line
 
-            # Additional check to avoid state names or other common fields
-            if len(name_part) > 3 and all(phrase.lower() not in name_part.lower() for phrase in unwanted_phrases):
-                return name_part
+            # Skip if it contains common words that shouldn't be in names
+            if any(f" {word} " in f" {name.lower()} " for word in common_words):
+                continue
 
-    # Look for name near the guardian name
-    for i, line in enumerate(lines):
-        if "S/O" in line or "D/O" in line or "W/O" in line or "C/O" in line:
-            # Check the line before for a potential name
-            if i > 0:
-                prev_line = lines[i-1].strip()
-                if (
-                    re.match(r'^[A-Za-z\s\'-]+$', prev_line)
-                    and all(phrase.lower() not in prev_line.lower() for phrase in unwanted_phrases)
-                    and not re.search(r'(?:address|gender|dob|date of birth|male|female|district|state|pincode)',
-                                     prev_line, re.IGNORECASE)
-                ):
-                    return prev_line
+            # Score: Medium for standalone capitalized names (7 points)
+            score = 7
 
-    # If we still can't find a name, look for the guardian name as a fallback
-    for line in lines:
-        guardian_match = re.search(r'(?:S/O|C/O|W/O|D/O)[.:]?\s*([A-Za-z\s\'-]+)', line, re.IGNORECASE)
-        if guardian_match:
-            return f"[Guardian: {guardian_match.group(1).strip()}]"
+            # Bonus if name contains common Indian first names
+            if any(first_name.lower() in name.lower() for first_name in COMMON_INDIAN_FIRST_NAMES):
+                score += 3
 
+            # Bonus for multiple words (more likely to be a full name)
+            words = name.split()
+            if len(words) >= 2:
+                score += len(words) - 1
+
+            name_candidates.append((name, score, "capitalized_line"))
+
+    # Method 4: Look for names in the first few lines (often contain the name)
+    for i, line in enumerate(lines[:10]):  # Check first 10 lines
+        line = line.strip()
+
+        # Skip short lines or lines with unwanted content
+        if len(line) < 3 or any(phrase.lower() in line.lower() for phrase in unwanted_phrases):
+            continue
+
+        # Skip lines with common non-name indicators
+        if re.search(r'(?:address|gender|dob|date of birth|male|female|district|state|pincode)', line, re.IGNORECASE):
+            continue
+
+        # Look for potential name patterns
+        if re.match(r'^[A-Za-z\s\'-]+$', line) and len(line.split()) >= 2 and len(line.split()) <= 5:
+            name = line
+
+            # Skip if it contains common words that shouldn't be in names
+            if any(f" {word} " in f" {name.lower()} " for word in common_words):
+                continue
+
+            # Score: Lower for names from first lines (6 points)
+            score = 6
+
+            # Bonus if name contains common Indian first names
+            if any(first_name.lower() in name.lower() for first_name in COMMON_INDIAN_FIRST_NAMES):
+                score += 3
+
+            # Bonus for position (earlier lines more likely to have name)
+            score += max(0, 5 - i)  # Bonus decreases with line number
+
+            name_candidates.append((name, score, "first_lines"))
+
+    # Method 5: Look for Tamil name followed by English name pattern
+    tamil_name_match = re.search(r'([\u0B80-\u0BFF\s]+)\n([A-Za-z\s\'-]+)', full_text)
+    if tamil_name_match:
+        name = tamil_name_match.group(2).strip()
+
+        # Clean up the name
+        name = re.sub(r'\s+', ' ', name)
+        name = name.strip()
+
+        # Skip if it contains unwanted phrases
+        if not any(phrase.lower() in name.lower() for phrase in unwanted_phrases):
+            # Score: High for Tamil-English pattern (9 points)
+            score = 9
+
+            # Bonus if name contains common Indian first names
+            if any(first_name.lower() in name.lower() for first_name in COMMON_INDIAN_FIRST_NAMES):
+                score += 3
+
+            name_candidates.append((name, score, "tamil_english_pattern"))
+
+    # If we have candidates, sort by score and return the highest
+    if name_candidates:
+        # Sort by score (descending)
+        name_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # Return the highest scoring candidate
+        return name_candidates[0][0]
+
+    # If no candidates found, return empty string
     return ""
 
 # Parse Aadhaar details
@@ -228,40 +403,38 @@ def parse_aadhaar_details(text: str) -> AadhaarData:
     if vid_match:
         data.vid = vid_match.group(1)
 
-    # Name (Tamil and English)
-    tamil_name_match = re.search(r'([\u0B80-\u0BFF\s]+)\n([A-Za-z\s\'-]+)', text)
+    # Tamil Name
+    tamil_name_match = re.search(r'([\u0B80-\u0BFF\s]+)', text)
     if tamil_name_match:
         data.name_tamil = tamil_name_match.group(1).strip()
-        potential_name = tamil_name_match.group(2).strip().replace("\n", " ")
-        potential_name = re.split(r'\s*(?:S/O|C/O|W/O|D/O)\s*', potential_name, flags=re.IGNORECASE)[0].strip()
-        potential_name = re.sub(r'\s+[CWSD]\s*$', '', potential_name).strip()
-        potential_name = re.sub(r'\s+', ' ', potential_name)
 
-        # Check if the potential name is not a state name
-        unwanted_state_names = ["Tamil Nadu", "Kerala", "Karnataka", "Andhra Pradesh"]
-        if potential_name and all(state.lower() not in potential_name.lower() for state in unwanted_state_names):
-            data.name = potential_name
+    # Extract name using our enhanced algorithm
+    # Pass both lines and full text for comprehensive analysis
+    extracted_name = extract_name_from_text(lines, text)
+    if extracted_name:
+        data.name = extracted_name
 
-    # If name is still not found or is a state name, use the enhanced extraction
-    if not data.name or any(state.lower() in data.name.lower() for state in ["Tamil Nadu", "Kerala", "Karnataka"]):
-        extracted_name = extract_name_from_text(lines)
-        if extracted_name:
-            data.name = extracted_name
+    # If name is still not found, try additional methods
+    if not data.name:
+        # Try fuzzy matching with common patterns
+        name_patterns = [
+            r'(?:^|\n)([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,3})(?=\s*\n)',
+            r'Name[:\s]+([A-Za-z\s\'-]+)',
+            r'([A-Za-z\s\'-]+)\s+(?:S/O|C/O|W/O|D/O)'
+        ]
 
-    # Look for name near guardian name as a last resort
-    if not data.name and data.guardian_name:
-        # Try to find a name pattern in lines before guardian name is mentioned
-        for i, line in enumerate(lines):
-            if data.guardian_name in line:
-                # Check previous lines for potential name
-                for j in range(max(0, i-3), i):
-                    prev_line = lines[j].strip()
-                    if (re.match(r'^[A-Za-z\s\'-]+$', prev_line) and
-                        not any(state.lower() in prev_line.lower() for state in ["Tamil Nadu", "Kerala", "Karnataka"]) and
-                        not re.search(r'(?:address|gender|dob|date of birth|male|female|district|state|pincode)',
-                                     prev_line, re.IGNORECASE)):
-                        data.name = prev_line
-                        break
+        for pattern in name_patterns:
+            match = re.search(pattern, text, re.MULTILINE)
+            if match:
+                potential_name = match.group(1).strip()
+                # Clean up the name
+                potential_name = re.sub(r'\s+', ' ', potential_name)
+
+                # Check if it's a valid name (not too short, not a state name)
+                if len(potential_name) >= 3 and not any(state.lower() in potential_name.lower()
+                                                      for state in ["Tamil Nadu", "Kerala", "Karnataka", "Andhra Pradesh"]):
+                    data.name = potential_name
+                    break
 
     # Guardian Name
     # First try with a more specific pattern that looks for "Guardian Name:" label
@@ -622,24 +795,22 @@ def validate_aadhaar():
         }
     }
 
-    # Compare name (case-insensitive and fuzzy matching)
-    extracted_name = aadhaar_data.name.lower() if aadhaar_data.name else ""
-    user_name_lower = user_name.lower()
+    # Compare name using enhanced fuzzy matching
+    extracted_name = aadhaar_data.name if aadhaar_data.name else ""
 
-    # Check if user name is contained in extracted name or vice versa
-    name_match = (user_name_lower in extracted_name or extracted_name in user_name_lower)
+    # Use our fuzzy name matching function with a threshold of 0.7 (70% similarity)
+    name_match_score = fuzzy_name_match(extracted_name, user_name, threshold=0.7)
 
-    # If not direct match, check for similarity (allowing for OCR errors)
-    if not name_match and extracted_name and user_name_lower:
-        # Simple word-based comparison (checking if most words match)
-        extracted_words = set(extracted_name.split())
-        user_words = set(user_name_lower.split())
-        common_words = extracted_words.intersection(user_words)
+    # Consider it a match if the score is above 0.7 (70% similarity)
+    name_match = name_match_score >= 0.7
 
-        if len(common_words) >= min(len(extracted_words), len(user_words)) * 0.7:
-            name_match = True
-
+    # Store the match result
     validation_results["matches"]["name"] = name_match
+
+    # Also store the match score for reference
+    validation_results["match_scores"] = {
+        "name": round(name_match_score * 100, 2)  # Convert to percentage
+    }
 
     # Compare DOB (allowing for different formats)
     extracted_dob = aadhaar_data.dob
@@ -711,6 +882,53 @@ def validate_aadhaar():
     validation_results["confidence_score"] = round((match_count / total_fields) * 100, 2)
 
     return jsonify(validation_results)
+
+# Helper function for fuzzy name matching
+def fuzzy_name_match(name1, name2, threshold=0.7):
+    """
+    Compare two names using fuzzy matching to account for OCR errors and variations
+    Returns a score between 0 and 1, where 1 is a perfect match
+    """
+    if not name1 or not name2:
+        return 0.0
+
+    # Convert to lowercase for comparison
+    name1 = name1.lower()
+    name2 = name2.lower()
+
+    # Direct match check
+    if name1 == name2:
+        return 1.0
+
+    # Check if one is contained in the other
+    if name1 in name2 or name2 in name1:
+        return 0.9
+
+    # Split into words and check for word-level matches
+    words1 = set(name1.split())
+    words2 = set(name2.split())
+
+    # Check common words
+    common_words = words1.intersection(words2)
+    if common_words:
+        # Calculate word overlap ratio
+        overlap_ratio = len(common_words) / max(len(words1), len(words2))
+        if overlap_ratio >= threshold:
+            return overlap_ratio
+
+    # Use difflib for sequence matching
+    sequence_ratio = difflib.SequenceMatcher(None, name1, name2).ratio()
+
+    # Check individual words for high similarity
+    max_word_ratio = 0
+    for word1 in words1:
+        for word2 in words2:
+            if len(word1) > 2 and len(word2) > 2:  # Only compare meaningful words
+                word_ratio = difflib.SequenceMatcher(None, word1, word2).ratio()
+                max_word_ratio = max(max_word_ratio, word_ratio)
+
+    # Return the best match score
+    return max(sequence_ratio, max_word_ratio)
 
 # Helper function to extract state from address pattern
 def extract_state_from_pattern(text):

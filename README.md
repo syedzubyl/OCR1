@@ -539,3 +539,4 @@ export default AadhaarValidator;
 - The OCR accuracy depends on the quality of the input document
 - This API is for demonstration purposes and should be used in accordance with privacy laws regarding Aadhaar data
 # OCR
+# OCR1
