@@ -20,7 +20,7 @@ load_dotenv()
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'pdf'}
+ALLOWED_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'tiff'}
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -654,72 +654,139 @@ def health_check():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        flash('No file part')
+    try:
+        if 'file' not in request.files:
+            flash('No file part')
+            return redirect(url_for('index'))
+
+        file = request.files['file']
+        pdf_password = request.form.get('pdf_password', '')
+
+        if file.filename == '':
+            flash('No selected file')
+            return redirect(url_for('index'))
+
+        # Print debugging information
+        print(f"Received file: {file.filename}, Content type: {file.content_type}")
+
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+
+            print(f"File saved to: {filepath}")
+
+            # Process the uploaded PDF with password if provided
+            results = process_aadhaar_card(filepath, pdf_password)
+
+            # Print the results for debugging
+            print(f"Extraction results: {results}")
+
+            # Store results in session for display
+            session['ocr_results'] = results
+
+            return redirect(url_for('results'))
+        else:
+            flash('Invalid file type. Please upload a PDF file.')
+            print(f"Invalid file type: {file.filename}")
+            return redirect(url_for('index'))
+    except Exception as e:
+        # Log any exceptions that occur
+        error_message = f"Error in upload_file: {str(e)}"
+        print(error_message)
+        flash(f"An error occurred: {str(e)}")
         return redirect(url_for('index'))
-
-    file = request.files['file']
-    pdf_password = request.form.get('pdf_password', '')
-
-    if file.filename == '':
-        flash('No selected file')
-        return redirect(url_for('index'))
-
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-
-        # Process the uploaded PDF with password if provided
-        results = process_aadhaar_card(filepath, pdf_password)
-
-        # Store results in session for display
-        session['ocr_results'] = results
-
-        return redirect(url_for('results'))
 
     flash('Invalid file type. Please upload a PDF file.')
     return redirect(url_for('index'))
 
 @app.route('/results')
 def results():
-    if 'ocr_results' not in session:
-        return redirect(url_for('index'))
+    try:
+        # Check if results are in session
+        if 'ocr_results' not in session:
+            print("Warning: No OCR results found in session")
+            return render_template('results.html', results={"error": "No OCR results found. Please upload a file first."})
 
-    results = session['ocr_results']
-    return render_template('results.html', results=results)
+        # Get results from session
+        results = session['ocr_results']
+
+        # Print debugging information
+        print(f"Results route - Session data: {results}")
+
+        # Check if results is a dictionary
+        if not isinstance(results, dict):
+            print(f"Warning: Results is not a dictionary, it's a {type(results)}")
+            results = {"error": f"Invalid results format: {type(results)}"}
+
+        # Ensure raw_text is available for debugging
+        if 'raw_text' not in results:
+            results['raw_text'] = "No raw text available"
+
+        return render_template('results.html', results=results)
+    except Exception as e:
+        error_message = f"Error in results route: {str(e)}"
+        print(error_message)
+        return render_template('results.html', results={"error": error_message})
 
 # API endpoint for extraction
 @app.route('/extract', methods=['POST'])
 def extract_aadhaar():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file provided. Please upload a PDF file."})
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided. Please upload a PDF or image file."})
 
-    file = request.files['file']
-    password = request.form.get('password', None)
+        file = request.files['file']
+        password = request.form.get('password', None)
 
-    if file.filename == '':
-        return jsonify({"error": "No selected file. Please upload a PDF file."})
+        if file.filename == '':
+            return jsonify({"error": "No selected file. Please upload a PDF or image file."})
 
-    if not allowed_file(file.filename):
-        return jsonify({"error": "Invalid file type. Please upload a PDF file."})
+        # Print debugging information
+        print(f"API: Received file: {file.filename}, Content type: {file.content_type}")
 
-    # Process the PDF file
-    contents = file.read()
-    text = extract_text_from_pdf(contents, password)
+        if not allowed_file(file.filename):
+            return jsonify({"error": f"Invalid file type: {file.filename}. Please upload a PDF or image file (jpg, jpeg, png, tiff)."})
 
-    # Parse the extracted text
-    aadhaar_data = parse_aadhaar_details(text)
+        # Save the file temporarily
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1])
+        file.save(temp_file.name)
+        temp_file.close()
 
-    # Add raw text to the response for debugging
-    result = aadhaar_data.model_dump()
-    result['raw_text'] = text
+        print(f"API: File saved temporarily to: {temp_file.name}")
 
-    # Print formatted JSON to terminal for debugging
-    print("\nExtracted Aadhaar Details:")
-    print(aadhaar_data.model_dump_json(indent=4))
+        # Process the file based on its type
+        file_ext = os.path.splitext(file.filename.lower())[1]
 
-    return jsonify(result)
+        if file_ext == '.pdf':
+            # Process PDF file
+            with open(temp_file.name, 'rb') as f:
+                pdf_bytes = f.read()
+            text = extract_text_from_pdf(pdf_bytes, password)
+        else:
+            # Process image file
+            image = Image.open(temp_file.name)
+            text = process_image_for_ocr(image)
+
+        # Clean up the temporary file
+        os.unlink(temp_file.name)
+
+        # Parse the extracted text
+        aadhaar_data = parse_aadhaar_details(text)
+
+        # Add raw text to the response for debugging
+        result = aadhaar_data.model_dump()
+        result['raw_text'] = text
+
+        # Print formatted JSON to terminal for debugging
+        print("\nExtracted Aadhaar Details:")
+        print(aadhaar_data.model_dump_json(indent=4))
+
+        return jsonify(result)
+    except Exception as e:
+        error_message = f"Error in extract_aadhaar: {str(e)}"
+        print(error_message)
+        return jsonify({"error": error_message, "raw_text": "Error occurred during processing"})
 
 # API endpoint for validation
 @app.route('/validate', methods=['POST'])

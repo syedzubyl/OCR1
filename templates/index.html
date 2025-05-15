@@ -1,133 +1,161 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aadhaar OCR - Upload</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #f4f4f4;
-            margin: 0;
-            padding: 0;
-        }
-        .container {
-            max-width: 800px;
-            margin: 50px auto;
-            background-color: white;
-            padding: 30px;
-            border-radius: 5px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-        }
-        h1 {
-            text-align: center;
-            color: #333;
-        }
-        .upload-form {
-            margin-top: 30px;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-        .file-input {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-        .submit-btn {
-            background-color: #4CAF50;
-            color: white;
-            padding: 10px 15px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-        .submit-btn:hover {
-            background-color: #45a049;
-        }
-        .flash-message {
-            background-color: #f8d7da;
-            color: #721c24;
-            padding: 10px;
-            margin-bottom: 20px;
-            border-radius: 4px;
-            text-align: center;
-        }
-        .nav {
-            display: flex;
-            justify-content: flex-end;
-            margin-bottom: 20px;
-        }
-        .nav a {
-            background-color: #4CAF50;
-            color: white;
-            padding: 8px 15px;
-            text-decoration: none;
-            border-radius: 4px;
-        }
-        .nav a:hover {
-            background-color: #45a049;
-        }
-        .instructions {
-            background-color: #e7f3fe;
-            border-left: 6px solid #2196F3;
-            padding: 15px;
-            margin-bottom: 20px;
-        }
-        .form-text {
-            display: block;
-            margin-top: 5px;
-            color: #6c757d;
-            font-size: 0.875rem;
-        }
+      body {
+        font-family: Arial, sans-serif;
+        background-color: #f4f4f4;
+        margin: 0;
+        padding: 0;
+      }
+      .container {
+        max-width: 800px;
+        margin: 50px auto;
+        background-color: white;
+        padding: 30px;
+        border-radius: 5px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        text-align: center;
+        color: #333;
+      }
+      .upload-form {
+        margin-top: 30px;
+      }
+      .form-group {
+        margin-bottom: 20px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      .file-input {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      .submit-btn {
+        background-color: #4caf50;
+        color: white;
+        padding: 10px 15px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      .submit-btn:hover {
+        background-color: #45a049;
+      }
+      .flash-message {
+        background-color: #f8d7da;
+        color: #721c24;
+        padding: 10px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+        text-align: center;
+      }
+      .nav {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 20px;
+      }
+      .nav a {
+        background-color: #4caf50;
+        color: white;
+        padding: 8px 15px;
+        text-decoration: none;
+        border-radius: 4px;
+      }
+      .nav a:hover {
+        background-color: #45a049;
+      }
+      .instructions {
+        background-color: #e7f3fe;
+        border-left: 6px solid #2196f3;
+        padding: 15px;
+        margin-bottom: 20px;
+      }
+      .form-text {
+        display: block;
+        margin-top: 5px;
+        color: #6c757d;
+        font-size: 0.875rem;
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div class="container">
-        <div class="nav">
-            <a href="{{ url_for('index') }}">Home</a>
-        </div>
-        
-        <h1>Aadhaar Card OCR</h1>
-        
-        <div class="instructions">
-            <h3>Instructions:</h3>
-            <p>1. Upload a PDF file containing an Aadhaar card.</p>
-            <p>2. The system will extract information such as Aadhaar number, name in Tamil, guardian name, date of birth, gender, address, and VID.</p>
-            <p>3. If the PDF is password-protected, enter the password below.</p>
-            <p>4. Make sure the file is clear and readable for best results.</p>
-        </div>
-        
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="flash-message">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        
-        <div class="upload-form">
-            <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label for="file">Select Aadhaar Card PDF:</label>
-                    <input type="file" id="file" name="file" class="file-input" accept=".pdf" required>
-                </div>
-                <div class="form-group">
-                    <label for="pdf_password">PDF Password (if protected):</label>
-                    <input type="password" id="pdf_password" name="pdf_password" class="file-input">
-                    <small class="form-text">Leave empty if the PDF is not password protected</small>
-                </div>
-                <button type="submit" class="submit-btn">Upload and Process</button>
-            </form>
-        </div>
+      <div class="nav">
+        <a href="{{ url_for('index') }}">Home</a>
+      </div>
+
+      <h1>Aadhaar Card OCR</h1>
+
+      <div class="instructions">
+        <h3>Instructions:</h3>
+        <p>
+          1. Upload a PDF or image file (JPG, JPEG, PNG, TIFF) containing an
+          Aadhaar card.
+        </p>
+        <p>
+          2. The system will extract information such as Aadhaar number, name in
+          Tamil, guardian name, date of birth, gender, address, and VID.
+        </p>
+        <p>3. If the PDF is password-protected, enter the password below.</p>
+        <p>4. Make sure the file is clear and readable for best results.</p>
+        <p>
+          5. For better name extraction, ensure the name is clearly visible in
+          the document.
+        </p>
+      </div>
+
+      {% with messages = get_flashed_messages() %} {% if messages %} {% for
+      message in messages %}
+      <div class="flash-message">{{ message }}</div>
+      {% endfor %} {% endif %} {% endwith %}
+
+      <div class="upload-form">
+        <form
+          action="{{ url_for('upload_file') }}"
+          method="post"
+          enctype="multipart/form-data"
+        >
+          <div class="form-group">
+            <label for="file">Select Aadhaar Card File:</label>
+            <input
+              type="file"
+              id="file"
+              name="file"
+              class="file-input"
+              accept=".pdf,.jpg,.jpeg,.png,.tiff"
+              required
+            />
+            <small class="form-text"
+              >Accepted formats: PDF, JPG, JPEG, PNG, TIFF</small
+            >
+          </div>
+          <div class="form-group">
+            <label for="pdf_password">PDF Password (if protected):</label>
+            <input
+              type="password"
+              id="pdf_password"
+              name="pdf_password"
+              class="file-input"
+            />
+            <small class="form-text"
+              >Leave empty if the PDF is not password protected</small
+            >
+          </div>
+          <button type="submit" class="submit-btn">Upload and Process</button>
+        </form>
+      </div>
     </div>
-</body>
+  </body>
 </html>
