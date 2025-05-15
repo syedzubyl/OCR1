@@ -104,18 +104,25 @@
       <div class="result-section">
         <h2>Aadhaar Card Details</h2>
 
-        <!-- Debug information -->
+        <!-- Status information -->
         <div class="result-item">
-          <div class="result-label">Debug Info:</div>
+          <div class="result-label">Extraction Status:</div>
           <div class="result-value">
-            <p>Results object type: {{ results.__class__.__name__ }}</p>
-            <p>
-              Results keys: {{ results.keys()|list if results is mapping else
-              'No keys (not a dict)' }}
+            {% if results.success %}
+            <p style="color: green; font-weight: bold">
+              ✓ Extraction successful
             </p>
+            {% else %}
+            <p style="color: orange; font-weight: bold">
+              ⚠ Partial extraction (some fields may be missing)
+            </p>
+            {% endif %}
+
             <p>
-              Session data available: {{ 'Yes' if session.get('ocr_results')
-              else 'No' }}
+              <small
+                >Results keys: {{ results.keys()|list if results is mapping else
+                'No keys (not a dict)' }}</small
+              >
             </p>
           </div>
         </div>
@@ -188,10 +195,17 @@
         {% endif %}
 
         <button class="toggle-raw-text" onclick="toggleRawText('raw')">
-          Show/Hide Raw Text
+          Show/Hide Raw Extracted Text
         </button>
         <div id="raw-text-raw" class="raw-text" style="display: none">
-          {{ results.raw_text }}
+          <h4>Raw Extracted Text (for debugging):</h4>
+          <p>
+            <small
+              >This shows all the text extracted from the PDF, including
+              region-specific extractions.</small
+            >
+          </p>
+          <pre>{{ results.raw_text }}</pre>
         </div>
       </div>
       {% endif %}

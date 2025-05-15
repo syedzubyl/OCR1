@@ -54,13 +54,22 @@ def allowed_file(filename):
 
 # Extract text from image using Tesseract OCR with enhanced preprocessing
 def extract_text_from_image(image: Image.Image) -> str:
-    # Convert PIL Image to OpenCV format
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    # Check if image is valid
+    if image is None:
+        print("Warning: Received None image in extract_text_from_image")
+        return ""
 
-    # Process with OpenCV for better OCR results
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    try:
+        # Convert PIL Image to OpenCV format
+        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-    # Apply multiple preprocessing techniques and combine results for better accuracy
+        # Process with OpenCV for better OCR results
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+        # Apply multiple preprocessing techniques and combine results for better accuracy
+    except Exception as e:
+        print(f"Error in image preprocessing: {str(e)}")
+        return ""
 
     # Method 1: Basic thresholding
     _, thresh1 = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -110,7 +119,7 @@ def extract_text_from_image(image: Image.Image) -> str:
 
         return all_text
 
-# Extract text from PDF using PyMuPDF with enhanced processing
+# Extract text from PDF using PyMuPDF with enhanced processing specifically for Aadhaar cards
 def extract_text_from_pdf(pdf_bytes: bytes, password: str = None) -> str:
     text = ""
     try:
@@ -120,41 +129,194 @@ def extract_text_from_pdf(pdf_bytes: bytes, password: str = None) -> str:
             if not success:
                 return "ERROR: Invalid password for PDF"
 
-        # Extract text from each page using multiple methods
+        # Aadhaar card specific regions of interest (ROIs)
+        # These are approximate regions where important information typically appears
+        # Values are percentages of page width and height
+        aadhaar_rois = {
+            "name_region": (0.1, 0.1, 0.9, 0.3),      # Top section where name usually appears
+            "aadhaar_number_region": (0.5, 0.1, 0.9, 0.3),  # Top right where Aadhaar number appears
+            "address_region": (0.1, 0.4, 0.9, 0.8),   # Middle to bottom section for address
+            "photo_region": (0.05, 0.2, 0.3, 0.5)     # Left side where photo appears (to avoid this area)
+        }
+
+        # Process each page with multiple techniques
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
+            page_width = page.rect.width
+            page_height = page.rect.height
 
-            # Method 1: Direct text extraction
-            page_text = page.get_text("text")
+            # Method 1: Direct text extraction with high-quality settings
+            page_text = page.get_text("text", sort=True)
             text += page_text + "\n"
 
-            # Method 2: Extract text with different parameters
-            page_text_blocks = page.get_text("blocks")
-            for block in page_text_blocks:
-                if isinstance(block, tuple) and len(block) > 4:
-                    text += block[4] + "\n"
+            # Method 2: Extract text with HTML formatting to preserve structure
+            html_text = page.get_text("html")
+            # Extract text from HTML while preserving some structure
+            html_text = re.sub(r'<[^>]*>', ' ', html_text)  # Remove HTML tags but keep spacing
+            text += html_text + "\n"
 
-            # Method 3: Always perform image-based extraction for better accuracy
-            # This helps with scanned documents or when text is embedded in images
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # Increase resolution for better OCR
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            # Method 3: Extract text with DICT mode to get better word positions
+            dict_text = page.get_text("dict")
+            if "blocks" in dict_text:
+                for block in dict_text["blocks"]:
+                    if "lines" in block:
+                        for line in block["lines"]:
+                            if "spans" in line:
+                                for span in line["spans"]:
+                                    if "text" in span:
+                                        text += span["text"] + " "
+                                text += "\n"
 
-            # Apply OCR to the image
-            img_text = extract_text_from_image(img)
-            text += img_text + "\n"
+            # Method 4: Process specific regions of interest with higher resolution
+            for roi_name, roi_coords in aadhaar_rois.items():
+                # Convert percentage coordinates to actual pixel coordinates
+                x0 = roi_coords[0] * page_width
+                y0 = roi_coords[1] * page_height
+                x1 = roi_coords[2] * page_width
+                y1 = roi_coords[3] * page_height
 
-            # Method 4: Extract text from specific regions if needed
-            # This can be useful for targeting specific areas where names typically appear
-            # For Aadhaar cards, names are usually in the top portion
-            top_region = page.rect_for_bbox((0, 0, page.rect.width, page.rect.height * 0.3))
-            pix_top = page.get_pixmap(clip=top_region, matrix=fitz.Matrix(2, 2))
-            img_top = Image.frombytes("RGB", [pix_top.width, pix_top.height], pix_top.samples)
-            top_text = extract_text_from_image(img_top)
-            text += top_text + "\n"
+                # Create a rectangle for the region
+                roi_rect = fitz.Rect(x0, y0, x1, y1)
+
+                # Extract text directly from this region
+                roi_text = page.get_text("text", clip=roi_rect)
+                text += f"ROI_{roi_name}: {roi_text}\n"
+
+                # Also perform OCR on this region with higher resolution
+                # Higher resolution for name and Aadhaar number regions
+                zoom_factor = 4 if roi_name in ["name_region", "aadhaar_number_region"] else 2
+                pix_roi = page.get_pixmap(clip=roi_rect, matrix=fitz.Matrix(zoom_factor, zoom_factor))
+                img_roi = Image.frombytes("RGB", [pix_roi.width, pix_roi.height], pix_roi.samples)
+
+                # Apply image preprocessing specifically for this region
+                if roi_name == "name_region":
+                    # For name region, use specialized preprocessing
+                    roi_ocr_text = extract_text_from_image_enhanced(img_roi, "name")
+                elif roi_name == "aadhaar_number_region":
+                    # For Aadhaar number region, use specialized preprocessing for numbers
+                    roi_ocr_text = extract_text_from_image_enhanced(img_roi, "number")
+                else:
+                    # For other regions, use standard preprocessing
+                    roi_ocr_text = extract_text_from_image(img_roi)
+
+                text += f"OCR_{roi_name}: {roi_ocr_text}\n"
+
+            # Method 5: Full page OCR with high resolution as a fallback
+            # This is especially useful for scanned documents
+            pix_full = page.get_pixmap(matrix=fitz.Matrix(3, 3))  # Higher resolution for full page
+            img_full = Image.frombytes("RGB", [pix_full.width, pix_full.height], pix_full.samples)
+            full_ocr_text = extract_text_from_image(img_full)
+            text += f"FULL_PAGE_OCR: {full_ocr_text}\n"
 
         return text
     except Exception as e:
-        return f"ERROR: {str(e)}"
+        error_msg = f"ERROR: {str(e)}"
+        print(error_msg)  # Log the error
+        return error_msg
+
+# Enhanced image processing specifically for different types of Aadhaar card data
+def extract_text_from_image_enhanced(image: Image.Image, data_type: str = "general") -> str:
+    # Convert PIL Image to OpenCV format
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    # Process with OpenCV for better OCR results
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+    # Apply different preprocessing techniques based on the type of data we're extracting
+    if data_type == "name":
+        # For name extraction, prioritize clarity and character separation
+        # Apply adaptive thresholding with careful parameters
+        processed_imgs = []
+
+        # Method 1: Adaptive thresholding with different parameters
+        thresh1 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        processed_imgs.append(thresh1)
+
+        # Method 2: Bilateral filtering to preserve edges while removing noise
+        bilateral = cv2.bilateralFilter(gray, 11, 17, 17)
+        _, thresh2 = cv2.threshold(bilateral, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh2)
+
+        # Method 3: Increase contrast for better character definition
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        contrast_enhanced = clahe.apply(gray)
+        _, thresh3 = cv2.threshold(contrast_enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh3)
+
+        # Method 4: Morphological operations to connect broken characters
+        kernel = np.ones((1,1), np.uint8)
+        morph = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+        _, thresh4 = cv2.threshold(morph, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh4)
+
+    elif data_type == "number":
+        # For number extraction, focus on digit clarity
+        processed_imgs = []
+
+        # Method 1: Basic thresholding optimized for digits
+        _, thresh1 = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+        processed_imgs.append(thresh1)
+
+        # Method 2: Noise removal followed by thresholding
+        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+        _, thresh2 = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh2)
+
+        # Method 3: Dilate slightly to connect broken digits
+        kernel = np.ones((1,1), np.uint8)
+        dilated = cv2.dilate(gray, kernel, iterations=1)
+        _, thresh3 = cv2.threshold(dilated, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh3)
+
+    else:
+        # General purpose processing
+        processed_imgs = []
+
+        # Method 1: Basic thresholding
+        _, thresh1 = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh1)
+
+        # Method 2: Adaptive thresholding
+        thresh2 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        processed_imgs.append(thresh2)
+
+        # Method 3: Denoising
+        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+        _, thresh3 = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        processed_imgs.append(thresh3)
+
+    # OCR configuration based on data type
+    if data_type == "name":
+        # For names, use a configuration that works well with text
+        config = '--oem 3 --psm 6 -c preserve_interword_spaces=1'
+    elif data_type == "number":
+        # For numbers, use a configuration optimized for digits
+        config = '--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789 '
+    else:
+        # General purpose configuration
+        config = '--oem 3 --psm 6'
+
+    # Apply OCR to all processed images and combine results
+    all_text = ""
+
+    try:
+        # Try with Tamil language support for names
+        if data_type == "name":
+            for img in processed_imgs:
+                text = pytesseract.image_to_string(img, config=config, lang='eng+tam')
+                all_text += " " + text
+        else:
+            # For other data types, use English only
+            for img in processed_imgs:
+                text = pytesseract.image_to_string(img, config=config, lang='eng')
+                all_text += " " + text
+    except:
+        # Fallback to English only if Tamil fails
+        for img in processed_imgs:
+            text = pytesseract.image_to_string(img, config=config, lang='eng')
+            all_text += " " + text
+
+    return all_text
 
 # Define common Indian names for better name recognition
 COMMON_INDIAN_FIRST_NAMES = [
@@ -382,7 +544,7 @@ def extract_name_from_text(lines, full_text=""):
     # If no candidates found, return empty string
     return ""
 
-# Parse Aadhaar details
+# Parse Aadhaar details with enhanced PDF-specific processing
 def parse_aadhaar_details(text: str) -> AadhaarData:
     data = AadhaarData()
     data.raw_text = text
@@ -393,26 +555,125 @@ def parse_aadhaar_details(text: str) -> AadhaarData:
 
     lines = [line.strip() for line in text.split("\n") if line.strip()]
 
-    # Aadhaar Number
-    aadhaar_match = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', text)
-    if aadhaar_match:
-        data.aadhaar_number = aadhaar_match.group(1)
+    # Look for region-specific data from our enhanced PDF extraction
+    # These are marked with prefixes like ROI_name_region: and OCR_name_region:
+    roi_sections = {}
 
-    # VID
-    vid_match = re.search(r'VID[:\s]*(\d{4}\s\d{4}\s\d{4}\s\d{4})', text)
-    if vid_match:
-        data.vid = vid_match.group(1)
+    # Extract all ROI and OCR sections
+    for line in lines:
+        if line.startswith("ROI_") or line.startswith("OCR_"):
+            parts = line.split(":", 1)
+            if len(parts) == 2:
+                section_name = parts[0].strip()
+                section_content = parts[1].strip()
+                roi_sections[section_name] = section_content
 
-    # Tamil Name
+    # Extract Aadhaar Number - prioritize the number region
+    if "ROI_aadhaar_number_region" in roi_sections:
+        aadhaar_match = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', roi_sections["ROI_aadhaar_number_region"])
+        if aadhaar_match:
+            data.aadhaar_number = aadhaar_match.group(1)
+
+    if not data.aadhaar_number and "OCR_aadhaar_number_region" in roi_sections:
+        aadhaar_match = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', roi_sections["OCR_aadhaar_number_region"])
+        if aadhaar_match:
+            data.aadhaar_number = aadhaar_match.group(1)
+
+    # Fallback to full text search for Aadhaar number
+    if not data.aadhaar_number:
+        # Try different formats: with spaces, without spaces, with dashes
+        aadhaar_patterns = [
+            r'\b(\d{4}\s\d{4}\s\d{4})\b',  # XXXX XXXX XXXX
+            r'\b(\d{4}-\d{4}-\d{4})\b',     # XXXX-XXXX-XXXX
+            r'\b(\d{12})\b'                 # XXXXXXXXXXXX (without spaces)
+        ]
+
+        for pattern in aadhaar_patterns:
+            aadhaar_match = re.search(pattern, text)
+            if aadhaar_match:
+                # Format as XXXX XXXX XXXX
+                if pattern == r'\b(\d{12})\b':
+                    # Insert spaces for 12-digit format
+                    num = aadhaar_match.group(1)
+                    data.aadhaar_number = f"{num[0:4]} {num[4:8]} {num[8:12]}"
+                elif pattern == r'\b(\d{4}-\d{4}-\d{4})\b':
+                    # Replace dashes with spaces
+                    data.aadhaar_number = aadhaar_match.group(1).replace('-', ' ')
+                else:
+                    data.aadhaar_number = aadhaar_match.group(1)
+                break
+
+    # VID extraction
+    vid_patterns = [
+        r'VID[:\s]*(\d{4}\s\d{4}\s\d{4}\s\d{4})',
+        r'VID[:\s]*(\d{16})',
+        r'VID[:\s]*(\d{4}-\d{4}-\d{4}-\d{4})'
+    ]
+
+    for pattern in vid_patterns:
+        vid_match = re.search(pattern, text)
+        if vid_match:
+            # Format as XXXX XXXX XXXX XXXX
+            if pattern == r'VID[:\s]*(\d{16})':
+                # Insert spaces for 16-digit format
+                num = vid_match.group(1)
+                data.vid = f"{num[0:4]} {num[4:8]} {num[8:12]} {num[12:16]}"
+            elif pattern == r'VID[:\s]*(\d{4}-\d{4}-\d{4}-\d{4})':
+                # Replace dashes with spaces
+                data.vid = vid_match.group(1).replace('-', ' ')
+            else:
+                data.vid = vid_match.group(1)
+            break
+
+    # Tamil Name extraction
     tamil_name_match = re.search(r'([\u0B80-\u0BFF\s]+)', text)
     if tamil_name_match:
         data.name_tamil = tamil_name_match.group(1).strip()
 
-    # Extract name using our enhanced algorithm
-    # Pass both lines and full text for comprehensive analysis
-    extracted_name = extract_name_from_text(lines, text)
-    if extracted_name:
-        data.name = extracted_name
+    # Name extraction - prioritize the name region
+    if "ROI_name_region" in roi_sections:
+        # First try to extract from the dedicated name region
+        name_region_text = roi_sections["ROI_name_region"]
+
+        # Try to find name with explicit label first
+        name_label_match = re.search(r'Name[:\s]+([A-Za-z\s\'-]+)', name_region_text, re.IGNORECASE)
+        if name_label_match:
+            potential_name = name_label_match.group(1).strip()
+            if len(potential_name) >= 3:
+                data.name = potential_name
+
+        # If not found with label, try the OCR version which might have better results
+        if not data.name and "OCR_name_region" in roi_sections:
+            ocr_name_region = roi_sections["OCR_name_region"]
+
+            # Look for capitalized words that might be names
+            name_candidates = []
+
+            # Pattern for names: capitalized words, 2-4 words total
+            name_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})'
+            name_matches = re.finditer(name_pattern, ocr_name_region)
+
+            for match in name_matches:
+                candidate = match.group(1).strip()
+                # Score the candidate based on length, position, etc.
+                score = len(candidate.split())  # More words = higher score
+
+                # Bonus if it contains common Indian names
+                if any(name.lower() in candidate.lower() for name in COMMON_INDIAN_FIRST_NAMES):
+                    score += 3
+
+                name_candidates.append((candidate, score))
+
+            # If we have candidates, use the highest scoring one
+            if name_candidates:
+                name_candidates.sort(key=lambda x: x[1], reverse=True)
+                data.name = name_candidates[0][0]
+
+    # If name is still not found, use our enhanced name extraction algorithm
+    if not data.name:
+        extracted_name = extract_name_from_text(lines, text)
+        if extracted_name:
+            data.name = extracted_name
 
     # If name is still not found, try additional methods
     if not data.name:
@@ -566,29 +827,74 @@ def parse_aadhaar_details(text: str) -> AadhaarData:
 
     return data
 
-# Process Aadhaar card from file path
+# Process Aadhaar card from file path with enhanced PDF handling
 def process_aadhaar_card(file_path, pdf_password=None):
     try:
+        print(f"Processing file: {file_path}")
         file_ext = os.path.splitext(file_path.lower())[1]
 
         if file_ext == '.pdf':
-            # Process PDF file
+            # Process PDF file with enhanced PDF-specific extraction
+            print("Detected PDF file, using specialized PDF extraction")
             with open(file_path, 'rb') as f:
                 pdf_bytes = f.read()
+
+            # Check if the PDF is valid
+            try:
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                if doc.needs_pass:
+                    if pdf_password:
+                        success = doc.authenticate(pdf_password)
+                        if not success:
+                            return {'error': 'Invalid PDF password', 'raw_text': ''}
+                    else:
+                        return {'error': 'PDF is password protected. Please provide a password.', 'raw_text': ''}
+
+                # Check if the PDF has content
+                if len(doc) == 0:
+                    return {'error': 'PDF file is empty or corrupted', 'raw_text': ''}
+
+                # Close the document after checking
+                doc.close()
+            except Exception as pdf_error:
+                return {'error': f'Error opening PDF: {str(pdf_error)}', 'raw_text': ''}
+
+            # Extract text using our enhanced PDF extraction
             text = extract_text_from_pdf(pdf_bytes, pdf_password)
+
+            # Check if we got meaningful text
+            if len(text.strip()) < 50 and not text.startswith("ERROR:"):
+                print("Warning: Extracted text is very short, PDF might be scanned or have security restrictions")
         else:
             # Process image file with enhanced preprocessing
+            print(f"Detected image file ({file_ext}), using image OCR")
             image = Image.open(file_path)
             text = process_image_for_ocr(image)
 
-        # Parse the extracted text
+        # Parse the extracted text with our enhanced parser
+        print("Parsing extracted text...")
         aadhaar_data = parse_aadhaar_details(text)
 
+        # Validate the extracted data
+        if not aadhaar_data.aadhaar_number and not aadhaar_data.name:
+            print("Warning: Could not extract Aadhaar number or name")
+
+        # Print what we found for debugging
+        print(f"Extracted Aadhaar number: {aadhaar_data.aadhaar_number or 'Not found'}")
+        print(f"Extracted name: {aadhaar_data.name or 'Not found'}")
+
         # Convert to dictionary for session storage
-        return aadhaar_data.model_dump()
+        result = aadhaar_data.model_dump()
+
+        # Add a success flag
+        result['success'] = bool(aadhaar_data.aadhaar_number or aadhaar_data.name)
+
+        return result
 
     except Exception as e:
-        return {'error': str(e), 'raw_text': ''}
+        error_message = f"Error processing Aadhaar card: {str(e)}"
+        print(error_message)
+        return {'error': error_message, 'raw_text': '', 'success': False}
 
 # Legacy helper functions for backward compatibility
 def extract_aadhar_number(text):
@@ -696,9 +1002,6 @@ def upload_file():
         print(error_message)
         flash(f"An error occurred: {str(e)}")
         return redirect(url_for('index'))
-
-    flash('Invalid file type. Please upload a PDF file.')
-    return redirect(url_for('index'))
 
 @app.route('/results')
 def results():
